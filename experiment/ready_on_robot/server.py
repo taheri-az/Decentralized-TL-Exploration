@@ -6,6 +6,8 @@ import sys
 from pathlib import Path as P
 from Helper import *
 import cv2
+from localization.localize import localize_fast
+
 # Load agent configurations and compute DFA data
 try:
     with open('agents_config.json', 'r') as f:
@@ -44,29 +46,29 @@ except FileNotFoundError:
 RID_TO_ARUCOID = {0: 0, 1: 1, 2: 2}
 
 
-# vid = cv2.VideoCapture(0)
+vid = cv2.VideoCapture(0)
 
-# width = vid.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
-# height = vid.set(cv2.CAP_PROP_FRAME_HEIGHT, 1200)
-# # fps = vid.set(cv2.CAP_PROP_FPS, 10)
-# # fps = vid.get(cv2.CAP_PROP_FPS)
-
-
-# camera_lock = threading.Lock()
+width = vid.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+height = vid.set(cv2.CAP_PROP_FRAME_HEIGHT, 1200)
+# fps = vid.set(cv2.CAP_PROP_FPS, 10)
+# fps = vid.get(cv2.CAP_PROP_FPS)
 
 
-# def read():
-#     while True:
-#         with camera_lock:
-#             ret = vid.grab()
-#         # Note that sleep is much less than frame speed which is about 0.02. The reason is when CPU is doing sth else, frames are qued and we should empty them very fast without much sleep.
-#         # sleep(0.001)
-#         if not ret:
-#             break
+camera_lock = threading.Lock()
 
 
-# reader_thread = threading.Thread(target=read, daemon=True)
-# reader_thread.start()
+def read():
+    while True:
+        with camera_lock:
+            ret = vid.grab()
+        # Note that sleep is much less than frame speed which is about 0.02. The reason is when CPU is doing sth else, frames are qued and we should empty them very fast without much sleep.
+        # sleep(0.001)
+        if not ret:
+            break
+
+
+reader_thread = threading.Thread(target=read, daemon=True)
+reader_thread.start()
 
 
 
@@ -120,30 +122,32 @@ class RobotHandler(threading.Thread):
                 return
 
             message_type = message["type"]
-            print(f"A request from robot: {message['rid']}")
+            # print(f"A request from robot: {message['rid']}")
 
             response = {}
-            if message_type == "pose":
+            if message_type == "get_pose":
+                response["type"] = "pose"
                 print("Getting pose for robot: ", self.rid)
                 response["xy"], response["heading"] = self.get_location()
                 while response["xy"] is None:
+                    print("try again")
                     response["xy"], response["heading"] = self.get_location()
-                self.send_msg(response)  #added
+                self.send_msg(response)
             elif message_type== 'snapshot':
                 self.snapshot = message['data']
-                print(f"Received snapshot from Agent {self.rid}")
+                print(f"Agnet {self.rid}: Received snapshot")
             
             elif message_type == 'ready':
                 self.is_ready = True
                 if not self.is_complete:
-                    print(f"   Agent {self.rid} ready")
+                    print(f"Agent {self.rid}: Received ready")
             
             elif message_type == 'complete':
                 was_active = not self.is_complete
                 self.is_complete = True
                 self.is_ready = True
                 if was_active:
-                    print(f"Agent {self.rid} mission complete!")
+                    print(f"Agent {self.rid}: mission complete!")
 
     def stop(self):
         self.exit = True
@@ -190,39 +194,37 @@ class RobotHandler(threading.Thread):
         return new_locations, new_headings
     
 
-    # def get_location(self):
-    #     try:
-    #         ret, frame = vid.retrieve()
-    #         cv2.imwrite("a.jpg", frame)
-    #         ids, locations, headings = localize_fast(frame)
-    #         locations, headings = self.scale_and_flip(locations, headings)
-    #         my_location = locations[ids.index(self.aruco_id)]
-    #         return [my_location[0], my_location[1]], headings[ids.index(self.aruco_id)]
-    #     except:
-    #         return None, None
-
-
     def get_location(self):
-        return None, None
+        try:
+            ret, frame = vid.retrieve()
+            cv2.imwrite("a.jpg", frame)
+            ids, locations, headings = localize_fast(frame)
+            locations, headings = self.scale_and_flip(locations, headings)
+            my_location = locations[ids.index(self.aruco_id)]
+            return [my_location[0], my_location[1]], headings[ids.index(self.aruco_id)]
+        except:
+            return None, None
+
 
     def close(self):
         self.send_msg({"type": "shutdown"})
         self.socket.close()
 
     def get_snapshot(self):
+        print("Handler sending request for snapshot")
         self.snapshot = None
         self.send_msg({"type": "request_snapshot"})
     
-    def step(self, iteration):
+    def step(self):
+        print("Handler sending request for step")
         message = {
             'type': 'step',
-            'iteration': iteration
         }
         self.send_msg(message)
 
 
 class Server:
-    def __init__(self, num_agents=2, max_iterations=1000, grid_size=20, com_range=300):
+    def __init__(self, num_agents=1, max_iterations=1000, grid_size=20, com_range=300):
         self.host = "0.0.0.0"
         self.port = 5000
         self.num_agents = num_agents
@@ -251,9 +253,9 @@ class Server:
             self.robot_handlers.append(robot_handler)
             robot_handler.start()
 
-        command = input("Give command -> ")
-        if command != "start":
-            exit()
+        # command = input("Give command -> ")
+        # if command != "start":
+        #     exit()
         
         # Give agents time to process init messages
         print("⏳ Waiting for agents to initialize...")
@@ -303,11 +305,13 @@ class Server:
             robot_handler.join(timeout=1.0)
     
     def get_snapshots(self):
+        print("1. Send req for snapshots")
         for handler in self.robot_handlers:
             handler.get_snapshot()
-        print("waiting for snapshots...")
+        print("2. Waiting for snapshots...")
         while True:
             if all(not handler.snapshot is None for handler in self.robot_handlers):
+                print("3. Got snapshots")
                 return True
             time.sleep(0.1)
     
@@ -315,6 +319,7 @@ class Server:
         print("waiting for ready...")
         while True:
             if all(handler.is_complete or handler.is_ready for handler in self.robot_handlers):
+                print("ready received")
                 if all(handler.is_complete for handler in self.robot_handlers):
                     print("All agents complete!")
                     return False
@@ -322,6 +327,7 @@ class Server:
             time.sleep(0.1)
 
     def broadcast_snapshots(self):
+        print("broadcasting snapshots")
         snapshots = {}
         for rid in range(self.num_agents):
             snapshots[rid] = self.robot_handlers[rid].snapshot
@@ -354,8 +360,9 @@ class Server:
     
     def broadcast_step(self):
         for handler in self.robot_handlers:
+            handler.is_ready = False
             if not handler.is_complete:
-                handler.step(self.iteration)
+                handler.step()
 
 
 if __name__ == "__main__":

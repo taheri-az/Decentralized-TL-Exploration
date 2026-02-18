@@ -7,17 +7,17 @@ import socket
 import errno
 import time
 import numpy as np
-# from pathlib import Path as P
+from pathlib import Path as P
 from client_helper import *
 from classes_2 import Environment, Agent
 
-# sys.path.append("/usr/local/lib")
-# sys.path.append(str(P(__file__).absolute().parent.parent))
-# from rollereye import *
+sys.path.append("/usr/local/lib")
+sys.path.append(str(P(__file__).absolute().parent.parent))
+from rollereye import *
 
 np.random.seed(0)
 
-ACCEPTANCE_DISTANCE = 0.005
+ACCEPTANCE_DISTANCE = 0.10
 
 def my_print(*args):
     args = list(args)
@@ -39,7 +39,7 @@ class Moorebot:
         init_msg = self.read_msg(blocking=True)
         
         if init_msg['type'] != 'init':
-            print "[ERROR] Expected init message from server"
+            print("[ERROR] Expected init message from server")
             sys.exit(1)
         
         self.is_complete = False
@@ -47,7 +47,7 @@ class Moorebot:
         try:
             config = load_config('config.json')
         except IOError:
-            print "[ERROR] config.json not found!"
+            print("[ERROR] config.json not found!")
             sys.exit(1)
         
         n = config['n']
@@ -59,7 +59,7 @@ class Moorebot:
         alpha3 = config['alpha3']
         node_labels_t = config['node_labels_t']
         
-        env = Environment(n, m, node_labels_t)
+        self.env = Environment(n, m, node_labels_t)
         
         # Extract DFA data from init message
         initial_position = init_msg['initial_position']
@@ -68,8 +68,8 @@ class Moorebot:
         trash_states = set(init_msg['trash_states_set'])
         commit_states = set(init_msg['commit_states'])
         
-        print "   Starting position: {}".format(initial_position)
-        print "   DFA initial state: {}".format(initial_state)
+        print("   Starting position: {}".format(initial_position))
+        print("   DFA initial state: {}".format(initial_state))
         
         # Create agent with DFA data instead of formula
         self.agent = Agent(
@@ -79,7 +79,7 @@ class Moorebot:
             initial_state=initial_state,
             trash_states_set=trash_states,
             commit_states=commit_states,
-            env=env,
+            env=self.env,
             h=h,
             alpha1=alpha1,
             alpha2=alpha2,
@@ -106,8 +106,14 @@ class Moorebot:
         msg_length = int(self.recv_all(10))
         server_message = self.recv_all(msg_length).decode()
         server_message = json.loads(server_message)
-        if server_message.get("type") is None or server_message.get("type") != "snapshots":
+        if server_message.get("type") == "pose":
+            # my_print("Received server message: ", server_message['xy'], None, None, None)
+            pass
+        elif server_message.get("type") == "snapshots":
+            my_print("Received server message: ", "others snapshot", None, None, None)
+        else:
             my_print("Received server message: ", server_message, None, None, None)
+
         if server_message.get("type") == "exit":
             raise Exception("Exit received")
         return server_message
@@ -117,21 +123,22 @@ class Moorebot:
     def move_to(self, dst):
         # TODO: Maybe read from message in between, to make sure you are not exitted
         while True:
-            message = {"type": "pose"}
+            message = {"type": "get_pose"}
             t = time.time()
             self.send_msg(message)
             response = self.read_msg(blocking=True)
-            my_print(
-                "Received response from server: {}, with a delay of {}. Dst is {}".format(
-                    response, time.time() - t, dst
-                )
-            )
+            # my_print(
+            #     "Received response from server: {}, with a delay of {}. Dst is {}".format(
+            #         response, time.time() - t, dst
+            #     )
+            # )
             xy = response["xy"]
             heading = response["heading"]
 
             distance = math.sqrt((dst[1] - xy[1]) ** 2 + (dst[0] - xy[0]) ** 2)
-            my_print("distance is: ", distance)
+            # my_print("distance is: ", distance)
             if distance < ACCEPTANCE_DISTANCE:
+                my_print("Dist less than threshold, STOP.")
                 rollereye.stop_move()
                 break
 
@@ -148,7 +155,7 @@ class Moorebot:
 
             Kp = 5
             control_speed = max(min(Kp * distance, 1), 0.15)
-            my_print("control is: ", control_speed, direction)
+            # my_print("control is: ", control_speed, direction)
             rollereye.set_translate_4(direction, control_speed)
 
 
@@ -157,9 +164,14 @@ class Moorebot:
         return self.read_msg(blocking=True)
 
     def run(self):
-        # rollereye.start()
-        # rollereye.timerStart()
+        rollereye.start()
+        rollereye.timerStart()
+        step = 1
         while True:
+            my_print("="*60, None, None, None, None)
+            my_print("Agent {}, step: {}".format(self.rid, step), None, None, None, None)
+            step += 1
+            my_print("="*60, None, None, None, None)
             msg = self.read_msg(blocking=True)
 
             if msg['type'] == 'request_snapshot':
@@ -198,11 +210,6 @@ class Moorebot:
             if step_msg['type'] != 'step':
                 raise Exception("Was waiting for step command but got: {}".format(step_msg['type']))
             
-            iteration = step_msg['iteration']
-            
-            my_print("="*60, None, None, None, None)
-            my_print("Agent {} - Iteration {}".format(self.rid, iteration), None, None, None, None)
-            my_print("="*60, None, None, None, None)
             
             self.agent.update_product_automaton()
             
@@ -217,7 +224,6 @@ class Moorebot:
                     int(aid): snapshot['position'] 
                     for aid, snapshot in other_snapshots.items()
                 }
-                print("WTFFFFFFFFFFFFFFFFFFFFFF")
                 best_frontier, path = self.agent.select_frontier(agents_in_range=agents_in_range_positions)
                 
                 if best_frontier is None or path is None:
@@ -230,20 +236,21 @@ class Moorebot:
                     self.agent.current_plan = path
                     self.agent.current_frontier = best_frontier
             
-            if hasattr(self.agent, 'current_plan') and self.agent.current_plan is not None and len(self.agent.current_plan) > 1:
-                next_position = self.agent.current_plan[1]
-                self.agent.move_one_step(next_position)
-                # self.move_to(next_position)
-                self.agent.current_plan = self.agent.current_plan[1:]
-                
-                my_print("  Agent {} moved to {} ({} steps remaining)".format(
-                    self.rid, self.agent.current_physical_state, len(self.agent.current_plan)-1), 
-                    None, None, None, None)
-                
-                if len(self.agent.current_plan) == 1:
-                    my_print("    Agent {} reached frontier {}".format(self.rid, self.agent.current_frontier), 
-                            None, None, None, None)
-                    self.agent.current_plan = None
+            my_print("Before move")
+            next_position = self.agent.current_plan[1]
+            self.agent.move_one_step(next_position)
+            coord = self.env.get_node_coordinates(next_position)
+            self.move_to(coord)
+            self.agent.current_plan = self.agent.current_plan[1:]
+            
+            my_print("  Agent {} moved to {} ({} steps remaining)".format(
+                self.rid, self.agent.current_physical_state, len(self.agent.current_plan)-1), 
+                None, None, None, None)
+            
+            if len(self.agent.current_plan) == 1:
+                my_print("    Agent {} reached frontier {}".format(self.rid, self.agent.current_frontier), 
+                        None, None, None, None)
+                self.agent.current_plan = None
             
             self.send_ready()
         
@@ -255,8 +262,8 @@ class Moorebot:
         my_print("Trajectory: {}".format(self.agent.full_physical_traj), None, None, None, None)
 
     def exit(self):
-        # rollereye.handle_exception(e.__class__.__name__ + ": " + e.message)
-        # rollereye.stop()
+        rollereye.handle_exception(e.__class__.__name__ + ": " + e.message)
+        rollereye.stop()
         self.socket.close()
 
     def send_snapshot(self):
@@ -280,10 +287,12 @@ class Moorebot:
         self.send_msg(message)
 
     def send_ready(self):
+        my_print("sending ready")
         message = {
             'type': 'ready',
         }
         self.send_msg(message)
+        my_print("Sent ready")
 
     def receive_snapshots(self):
         msg = self.read_msg()
@@ -303,7 +312,8 @@ class Moorebot:
 
 
 if __name__ == "__main__":
-    SERVER_IP = "localhost"
+    # SERVER_IP = "localhost"
+    SERVER_IP = "192.168.1.111"
     SERVER_PORT = 5000
     
     if len(sys.argv) > 1:

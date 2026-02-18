@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from Helper_p22 import *
+from client_helper import *
 import copy
 import random
 import numpy as np
@@ -17,6 +17,21 @@ class Environment:
         for node in range(n * m):
             if node not in self.node_labels_t:
                 self.node_labels_t[node] = set()
+
+    def get_node_coordinates(self, node_index):
+        """Convert node index to (x, y) coordinates for robot waypoints."""
+        row = node_index // self.m
+        col = node_index % self.m
+
+        # Adjust these values based on your Webots world setup
+        cell_size = 0.25  # meters per grid cell
+        offset_x = 0.5   # world origin offset
+        offset_y = 0.5  # Start from top (Y=10)
+
+        x = col * cell_size + offset_x
+        y = offset_y + (row * cell_size)  # SUBTRACT to make Y decrease as row increases
+        return (y, x)
+
 
 class Agent:
     def __init__(self, agent_id, initial_position, dfa_transitions, initial_state, trash_states_set, commit_states, env, h, alpha1, alpha2, alpha3):

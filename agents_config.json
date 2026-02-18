@@ -1,7 +1,7 @@
 [
     {
       "id": 0,
-      "start": 259,
+      "start": 0,
       "mission": "(!d U (d U (p U((d|p) U s)) )) & (F s) & (!s U p)",
       "description": "Complex mission agent"
     },
