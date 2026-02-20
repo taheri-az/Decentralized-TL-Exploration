@@ -263,87 +263,103 @@ def get_states_within_h_distance(m, n, current_state, h):
                 queue.append((next_state, distance + 1))
 
     return list(visited)
-
-
-
+#prunning added 
 def generate_product_automaton22(nodes, edges, dfa_states, dfa_transitions, node_labels, atomic_props):
-    # Build DFA dictionary for fast lookup
+    import numpy as np
+    import networkx as nx
+
+    # --- Build DFA dictionary for fast lookup ---
     dfa_dict = {}
-    for q, obs_list, q_next in dfa_transitions:
-        for formula in obs_list:  # allow multiple formulas
+    for (q, obs_list, q_next) in dfa_transitions:
+        for formula in obs_list:
             dfa_dict[(q, formula)] = q_next
-    
-    # Helper: convert node label set to DFA observation string
+
+    # --- Helper: convert node label set to DFA observation string ---
     def make_obs_formula(label_set):
-        """Generate observation formula based on which APs are present."""
         if not atomic_props:
-            return 'true'  # No atomic propositions
-        
-        # Create formula: each AP is either present or negated
-        # Order must match the order in atomic_props
-        parts = []
+            return 'true'
+        obs_parts = []
         for ap in atomic_props:
             if ap in label_set:
-                parts.append(ap)
+                obs_parts.append(ap)
             else:
-                parts.append("!{}".format(ap))
-        
-        return ' && '.join(parts)
-    
-    # Build adjacency dict from edge list
-    adj = {int(v): [] for v in nodes.flatten()}
-    for u, v in edges:
-        adj[int(u)].append(int(v))
-        adj[int(v)].append(int(u))  # if undirected
-    
-    # Enumerate all product nodes
+                obs_parts.append("!%s" % ap)   # Python2-safe formatting
+        return ' && '.join(obs_parts)
+
+    # --- Helper: check if a physical node is an obstacle ---
+    def is_obstacle(v):
+        return 'obs' in node_labels.get(v, set())
+
+    # --- Build adjacency dict from edge list (skip obstacle nodes) ---
+    adj = {}
+    for v in nodes.flatten():
+        v = int(v)
+        if not is_obstacle(v):
+            adj[v] = []
+
+    for (u, v) in edges:
+        u = int(u)
+        v = int(v)
+        if is_obstacle(u) or is_obstacle(v):
+            continue
+        if u not in adj:
+            adj[u] = []
+        if v not in adj:
+            adj[v] = []
+        adj[u].append(v)
+        adj[v].append(u)
+
+    # --- Enumerate all product nodes ---
     product_nodes = []
     node_to_index = {}
     for v in nodes.flatten():
         v = int(v)
+        if is_obstacle(v):
+            continue
         for q in dfa_states:
             idx = len(product_nodes)
             product_nodes.append((v, q))
             node_to_index[(v, q)] = idx
-    
-    # Build product transitions
-    transitions = {pn: set() for pn in product_nodes}  # use set to remove duplicates
-    for v in nodes.flatten():
-        v = int(v)
-        if v not in adj:
-            continue
+
+    # --- Build product transitions ---
+    transitions = {}
+    for pn in product_nodes:
+        transitions[pn] = []
+
+    for v in adj:
         for v_next in adj[v]:
+            if is_obstacle(v_next):
+                continue
             obs = make_obs_formula(node_labels.get(v_next, set()))
             for q in dfa_states:
                 current_state = (v, q)
                 if (q, obs) in dfa_dict:
                     q_next = dfa_dict[(q, obs)]
-                    transitions[current_state].add((v_next, q_next))
-    
-    # Convert sets to lists for output
-    for k in transitions:
-        transitions[k] = list(transitions[k])
-    
-    # Build NetworkX graph
+                    next_state = (v_next, q_next)
+                    if next_state in node_to_index:
+                        if next_state not in transitions[current_state]:
+                            transitions[current_state].append(next_state)
+
+    # --- Build NetworkX graph ---
     product_graph = nx.DiGraph()
     product_graph.add_nodes_from(product_nodes)
-    for src, dst_list in transitions.items():
-        for dst in dst_list:
+    for src in transitions:
+        for dst in transitions[src]:
             product_graph.add_edge(src, dst)
-    
-    # Build adjacency matrix
+
+    # --- Build adjacency matrix ---
     n = len(product_nodes)
     PR_adj_matrix = np.zeros((n, n), dtype=int)
-    for src, dst_list in transitions.items():
+
+    for src in transitions:
         i = node_to_index[src]
-        for dst in dst_list:
+        for dst in transitions[src]:
             j = node_to_index[dst]
             PR_adj_matrix[i, j] = 1
-    
+
     return product_graph, transitions, product_nodes, PR_adj_matrix
 
-
-
+#prunning added
 def update_product_automaton_incremental(
     product_graph,
     transitions,
@@ -357,146 +373,187 @@ def update_product_automaton_incremental(
     node_labels,
     atomic_props
 ):
-    """
-    Incrementally add new physical nodes to an existing product automaton.
-    Only creates product transitions where physical edges actually exist.
-    
-    Parameters:
-    -----------
-    product_graph : nx.DiGraph
-        Existing product graph
-    transitions : dict
-        Existing transitions dictionary {(v,q): [(v',q'), ...]}
-    product_nodes : list
-        Existing list of product nodes [(v,q), ...]
-    node_to_index : dict
-        Mapping from (v,q) to index in product_nodes
-    PR_adj_matrix : np.ndarray
-        Existing adjacency matrix
-    new_nodes : set, list, or array
-        New physical nodes to add
-    edges : array-like
-        Physical edges from create_graph (ALL edges including new ones)
-    dfa_states : list
-        DFA states
-    dfa_transitions : list
-        DFA transitions [(q, [obs], q_next), ...]
-    node_labels : dict
-        Node labels {node: set of labels}
-    atomic_props : list
-        List of atomic propositions in correct order
-    
-    Returns:
-    --------
-    Updated versions of all input structures
-    """
-    
-    # Convert new_nodes to set
-    if isinstance(new_nodes, set):
-        new_nodes_set = set([int(v) for v in new_nodes])
-    elif isinstance(new_nodes, np.ndarray):
-        new_nodes_set = set([int(v) for v in new_nodes.flatten()])
+    import numpy as np
+
+    # --- Convert new_nodes to set of ints ---
+    new_nodes_set = set()
+    if isinstance(new_nodes, np.ndarray):
+        flat_nodes = new_nodes.flatten()
+        for v in flat_nodes:
+            new_nodes_set.add(int(v))
     else:
-        new_nodes_set = set([int(v) for v in new_nodes])
-    
-    # Build DFA dictionary
+        for v in new_nodes:
+            new_nodes_set.add(int(v))
+
+    # --- Build DFA dictionary ---
     dfa_dict = {}
-    for q, obs_list, q_next in dfa_transitions:
+    for (q, obs_list, q_next) in dfa_transitions:
         for formula in obs_list:
             dfa_dict[(q, formula)] = q_next
-    
-    # Helper: convert node label set to DFA observation string
+
+    # --- Helper functions ---
     def make_obs_formula(label_set):
         if not atomic_props:
             return 'true'
-        return ' && '.join([ap if ap in label_set else "!{}".format(ap) for ap in atomic_props])
-    
-    # Build physical adjacency dict from edges
+        obs_parts = []
+        for ap in atomic_props:
+            if ap in label_set:
+                obs_parts.append(ap)
+            else:
+                obs_parts.append("!%s" % ap)
+        return ' && '.join(obs_parts)
+
+    def is_obstacle(v):
+        return 'obs' in node_labels.get(v, set())
+
+    # --- Build physical adjacency ---
     physical_adj = {}
-    for u, v in edges:
-        u, v = int(u), int(v)
+    for (u, v) in edges:
+        u = int(u)
+        v = int(v)
         if u not in physical_adj:
             physical_adj[u] = []
         if v not in physical_adj:
             physical_adj[v] = []
         physical_adj[u].append(v)
-        physical_adj[v].append(u)  # undirected
-    
-    # Extract existing physical nodes
-    existing_physical_nodes = set([v for v, q in product_nodes])
-    
-    # Filter truly new nodes
-    truly_new_nodes = new_nodes_set - existing_physical_nodes
-    
+        physical_adj[v].append(u)
+
+    # --- Existing physical nodes ---
+    existing_physical_nodes = set()
+    for (v, q) in product_nodes:
+        existing_physical_nodes.add(v)
+
+    # --- Filter new nodes (exclude obstacles) ---
+    truly_new_nodes = set()
+    for v in new_nodes_set:
+        if v not in existing_physical_nodes and not is_obstacle(v):
+            truly_new_nodes.add(v)
+
     if not truly_new_nodes:
         return product_graph, transitions, product_nodes, node_to_index, PR_adj_matrix
-    
-    # Add new product nodes
-    old_size = len(product_nodes)
+
+    # --- Add new product nodes ---
     for v in truly_new_nodes:
         for q in dfa_states:
-            idx = len(product_nodes)
             new_node = (v, q)
+            idx = len(product_nodes)
             product_nodes.append(new_node)
             node_to_index[new_node] = idx
             product_graph.add_node(new_node)
             transitions[new_node] = []
-    
-    # Expand adjacency matrix
+
+    # --- Rebuild adjacency matrix ---
     new_size = len(product_nodes)
-    if new_size > old_size:
-        new_matrix = np.zeros((new_size, new_size), dtype=int)
-        new_matrix[:old_size, :old_size] = PR_adj_matrix
-        PR_adj_matrix = new_matrix
-    
-    # Add transitions ONLY where physical edges exist
-    nodes_to_process = truly_new_nodes | existing_physical_nodes
-    
+    new_matrix = np.zeros((new_size, new_size), dtype=int)
+
+    for (u_node, v_node) in product_graph.edges():
+        if u_node in node_to_index and v_node in node_to_index:
+            i = node_to_index[u_node]
+            j = node_to_index[v_node]
+            if i < new_size and j < new_size:
+                new_matrix[i, j] = 1
+
+    PR_adj_matrix = new_matrix
+
+    # --- Prune obstacle nodes ---
+    nodes_to_prune = []
+    for (v, q) in list(product_nodes):
+        if is_obstacle(v):
+            nodes_to_prune.append((v, q))
+
+    for node in nodes_to_prune:
+        if product_graph.has_node(node):
+            product_graph.remove_node(node)
+
+        if node in transitions:
+            del transitions[node]
+
+        for key in transitions:
+            if node in transitions[key]:
+                transitions[key].remove(node)
+
+        if node in product_nodes:
+            product_nodes.remove(node)
+
+        if node in node_to_index:
+            del node_to_index[node]
+
+    # --- Rebuild index ---
+    node_to_index.clear()
+    idx = 0
+    for node in product_nodes:
+        node_to_index[node] = idx
+        idx += 1
+
+    # --- Rebuild matrix ---
+    final_size = len(product_nodes)
+    PR_adj_matrix = np.zeros((final_size, final_size), dtype=int)
+
+    for (u_node, v_node) in product_graph.edges():
+        if u_node in node_to_index and v_node in node_to_index:
+            i = node_to_index[u_node]
+            j = node_to_index[v_node]
+            PR_adj_matrix[i, j] = 1
+
+    # --- Add transitions ---
+    nodes_to_process = set()
+    for v in truly_new_nodes:
+        nodes_to_process.add(v)
+    for v in existing_physical_nodes:
+        nodes_to_process.add(v)
+
     for v in nodes_to_process:
+        if is_obstacle(v):
+            continue
         if v not in physical_adj:
             continue
-            
-        # Only process if v is in the product automaton
-        if not any((v, q) in node_to_index for q in dfa_states):
+
+        state_exists = False
+        for q in dfa_states:
+            if (v, q) in node_to_index:
+                state_exists = True
+                break
+        if not state_exists:
             continue
-        
-        # For each physical neighbor
+
         for v_next in physical_adj[v]:
-            # Only create transition if both nodes exist in product automaton
-            if not any((v_next, q) in node_to_index for q in dfa_states):
+            if is_obstacle(v_next):
                 continue
-            
-            # Check if this edge involves at least one new node
+
+            next_state_exists = False
+            for q in dfa_states:
+                if (v_next, q) in node_to_index:
+                    next_state_exists = True
+                    break
+            if not next_state_exists:
+                continue
+
             if v not in truly_new_nodes and v_next not in truly_new_nodes:
-                continue  # Skip edges between existing nodes (already processed)
-            
-            # Create product transitions based on DFA
+                continue
+
             obs = make_obs_formula(node_labels.get(v_next, set()))
-            
+
             for q in dfa_states:
                 current_state = (v, q)
-                
                 if current_state not in node_to_index:
                     continue
-                
+
                 if (q, obs) in dfa_dict:
                     q_next = dfa_dict[(q, obs)]
                     next_state = (v_next, q_next)
-                    
+
                     if next_state not in node_to_index:
                         continue
-                    
-                    # Add transition
+
                     if next_state not in transitions[current_state]:
                         transitions[current_state].append(next_state)
                         product_graph.add_edge(current_state, next_state)
-                        
+
                         i = node_to_index[current_state]
                         j = node_to_index[next_state]
                         PR_adj_matrix[i, j] = 1
-    
-    return product_graph, transitions, product_nodes, node_to_index, PR_adj_matrix
 
+    return product_graph, transitions, product_nodes, node_to_index, PR_adj_matrix
 
 
 

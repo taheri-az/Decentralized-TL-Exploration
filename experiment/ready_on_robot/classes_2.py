@@ -182,24 +182,44 @@ class Agent:
                     self.atomic_props
                 )
     
+    # def check_mission_complete(self):
+    #     """Check if mission can be completed from current state."""
+    #     current_product_state = (self.current_physical_state, self.current_dfa_state)
+    #     accepting_path = find_shortest_path_to_accepting(
+    #         current_product_state, 
+    #         self.accepting_states, 
+    #         self.transitions
+    #     )
+        
+    #     if accepting_path:
+    #         print("[OK] Agent {}: Accepting path found! Executing...".format(self.id))
+    #         for state in accepting_path[1:]:
+    #             self.current_physical_state, self.current_dfa_state = state
+    #             self.full_traj.append(state)
+    #             self.full_physical_traj.append(int(self.current_physical_state))
+    #             print("Agent {} -> {}".format(self.id, state))
+    #         return True
+    #     return False
+    # added for fully following the path
     def check_mission_complete(self):
-        """Check if mission can be completed from current state."""
+        """
+        Check if mission can be completed from current state.
+        Returns physical path (list) if found, else None.
+        Does NOT modify agent state.
+        """
         current_product_state = (self.current_physical_state, self.current_dfa_state)
         accepting_path = find_shortest_path_to_accepting(
-            current_product_state, 
-            self.accepting_states, 
+            current_product_state,
+            self.accepting_states,
             self.transitions
         )
-        
+
         if accepting_path:
-            print("[OK] Agent {}: Accepting path found! Executing...".format(self.id))
-            for state in accepting_path[1:]:
-                self.current_physical_state, self.current_dfa_state = state
-                self.full_traj.append(state)
-                self.full_physical_traj.append(int(self.current_physical_state))
-                print("Agent {} -> {}".format(self.id, state))
-            return True
-        return False
+            physical_path = [int(s) for (s, q) in accepting_path]
+            print("[OK] Agent {}: Accepting path found: {}".format(self.id, physical_path))
+            return physical_path
+
+        return None
     
     def select_frontier(self, agents_in_range=None):
         """Select best frontier to explore."""

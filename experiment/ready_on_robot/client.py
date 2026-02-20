@@ -7,13 +7,13 @@ import socket
 import errno
 import time
 import numpy as np
-from pathlib import Path as P
+from pathlib import Path as P    #1
 from client_helper import *
 from classes_2 import Environment, Agent
 
-sys.path.append("/usr/local/lib")
-sys.path.append(str(P(__file__).absolute().parent.parent))
-from rollereye import *
+sys.path.append("/usr/local/lib")  #2
+sys.path.append(str(P(__file__).absolute().parent.parent))  #3
+from rollereye import *       #4
 
 np.random.seed(0)
 
@@ -85,6 +85,7 @@ class Moorebot:
             alpha2=alpha2,
             alpha3=alpha3
         )
+        self.agent.mission_finishing = False #added for the full path
 
     def recv_all(self, total_bytes):
         data = b""
@@ -139,7 +140,7 @@ class Moorebot:
             # my_print("distance is: ", distance)
             if distance < ACCEPTANCE_DISTANCE:
                 my_print("Dist less than threshold, STOP.")
-                rollereye.stop_move()
+                rollereye.stop_move() #8
                 break
 
             direction = (
@@ -156,7 +157,7 @@ class Moorebot:
             Kp = 5
             control_speed = max(min(Kp * distance, 1), 0.15)
             # my_print("control is: ", control_speed, direction)
-            rollereye.set_translate_4(direction, control_speed)
+            rollereye.set_translate_4(direction, control_speed)  #9
 
 
     def get_location(self):
@@ -164,8 +165,8 @@ class Moorebot:
         return self.read_msg(blocking=True)
 
     def run(self):
-        rollereye.start()
-        rollereye.timerStart()
+        rollereye.start()  #10
+        rollereye.timerStart()   #11
         step = 1
         while True:
             my_print("="*60, None, None, None, None)
@@ -213,8 +214,21 @@ class Moorebot:
             
             self.agent.update_product_automaton()
             
-            if self.agent.check_mission_complete():
-                my_print("Agent {} mission complete!".format(self.rid), None, None, None, None)
+            # if self.agent.check_mission_complete():
+            #     my_print("Agent {} mission complete!".format(self.rid), None, None, None, None)
+            #     self.send_complete()
+            #     continue
+            # added_for_fully_following the path
+            accepting_path = self.agent.check_mission_complete()
+            if accepting_path is not None and len(accepting_path) > 1:
+                my_print("Agent {}: Executing final accepting path: {}".format(
+                    self.rid, accepting_path), None, None, None, None)
+                self.agent.current_plan     = accepting_path
+                self.agent.current_frontier = accepting_path[-1]
+                self.agent.mission_finishing = True
+            elif accepting_path is not None and len(accepting_path) <= 1:
+                my_print("Agent {} mission complete (already at goal)!".format(self.rid),
+                         None, None, None, None)
                 self.send_complete()
                 continue
             
@@ -247,11 +261,23 @@ class Moorebot:
                 self.rid, self.agent.current_physical_state, len(self.agent.current_plan)-1), 
                 None, None, None, None)
             
+            # if len(self.agent.current_plan) == 1:
+            #     my_print("    Agent {} reached frontier {}".format(self.rid, self.agent.current_frontier), 
+            #             None, None, None, None)
+            #     self.agent.current_plan = None
+            #added for fully following the path
             if len(self.agent.current_plan) == 1:
-                my_print("    Agent {} reached frontier {}".format(self.rid, self.agent.current_frontier), 
-                        None, None, None, None)
+                my_print("    Agent {} reached frontier {}".format(
+                    self.rid, self.agent.current_frontier),
+                    None, None, None, None)
                 self.agent.current_plan = None
-            
+                if getattr(self.agent, 'mission_finishing', False):
+                    my_print("Agent {} mission complete!".format(self.rid),
+                             None, None, None, None)
+                    self.send_complete()
+                    self.agent.mission_finishing = False
+                    continue
+
             self.send_ready()
         
         my_print("="*60, None, None, None, None)
@@ -262,8 +288,8 @@ class Moorebot:
         my_print("Trajectory: {}".format(self.agent.full_physical_traj), None, None, None, None)
 
     def exit(self):
-        rollereye.handle_exception(e.__class__.__name__ + ": " + e.message)
-        rollereye.stop()
+        rollereye.handle_exception(e.__class__.__name__ + ": " + e.message)  #6
+        rollereye.stop()  #7
         self.socket.close()
 
     def send_snapshot(self):
@@ -313,7 +339,7 @@ class Moorebot:
 
 if __name__ == "__main__":
     # SERVER_IP = "localhost"
-    SERVER_IP = "192.168.1.111"
+    SERVER_IP = "192.168.1.111"  #5 
     SERVER_PORT = 5000
     
     if len(sys.argv) > 1:

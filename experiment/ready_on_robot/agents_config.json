@@ -1,0 +1,14 @@
+[
+    {
+      "id": 0,
+      "start": 0,
+      "mission": "(!d U (d U (p U((d|p) U s)) )) & (F s) & (!s U p)",
+      "description": "Complex mission agent"
+    },
+    {
+      "id": 1,
+      "start": 216,
+      "mission": "!d U (d U (a))",
+      "description": "Find 'a'"
+    }
+  ]
