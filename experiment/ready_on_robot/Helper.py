@@ -651,79 +651,54 @@ def task_progress_metric(
 
 
 
+def compute_frontier_commit(x, product_graph, start_cell, start_dfa_state,
+                             accepting_states, commit_states, trash_state,
+                             delta_phi, I_x, X_size, dfa_distance,
+                             alpha1, alpha2, alpha3):
 
-def compute_frontier_commit(
-    x,
-    product_graph,
-    start_cell,
-    start_dfa_state,
-    accepting_states,
-    commit_states,
-    trash_state,
-    delta_phi,
-    I_x,
-    X_size,
-    dfa_distance,
-    alpha1,
-    alpha2,
-    alpha3
-):
-    """
-    Compute frontier value V(x) and trajectory sp.
+    start_node = (start_cell, start_dfa_state)
 
-    Returns:
-        Vx: float
-        sp: list of product states (or None if unreachable/unsafe)
-    """
+    # Get all product nodes for this frontier cell (skip trash)
+    frontier_nodes = [
+        (x, q) for (cell, q) in product_graph.nodes()
+        if cell == x and q != trash_state
+    ]
 
-    # ----------------------------
-    # 1. Compute shortest product path to frontier
-    # ----------------------------
-    sp = shortest_product_path_to_frontier(
-        product_graph,
-        start_cell,
-        start_dfa_state,
-        x,
-        accepting_states,
-        commit_states,
-        trash_state
-    )
+    if not frontier_nodes:
+        return float('-inf'), None
 
-    # ----------------------------
-    # 2. Compute task progress metric Ω(sp)
-    # ----------------------------
-    if sp is None:
-        Omega = float('-inf')
-    else:
-        q0 = sp[0][1]          # initial DFA state
-        qf = sp[-1][1]         # final DFA state
+    best_Vx = float('-inf')
+    best_sp = None
 
+    # Evaluate EVERY possible (x, q) target — pick the one with best value
+    for target in frontier_nodes:
+        try:
+            sp = nx.shortest_path(product_graph, source=start_node, target=target)
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            continue
+
+        q0 = sp[0][1]
+        qf = sp[-1][1]
+
+        # Compute Omega for this path
         if qf == trash_state:
-            Omega = float('-inf')
+            continue  # skip trash paths entirely
         elif qf in commit_states:
             Omega = -alpha1 * X_size / alpha2
         else:
             Omega = delta_phi(q0, qf, dfa_distance)
 
-    # ----------------------------
-    # 3. Compute trajectory weight Wp(sp)
-    # ----------------------------
-    Wp = len(sp) - 1 if sp is not None else 1
+        Wp = len(sp) - 1  # path length in hops
+        if Wp == 0:
+            Wp = 1
 
-    # ----------------------------
-    # 4. Compute frontier value
-    # ----------------------------
-    if Omega == float('-inf'):
-        Vx = float('-inf')
-    else:
         Vx = (alpha1 * I_x + alpha2 * Omega) / (Wp ** alpha3)
 
-    # ----------------------------
-    # 5. Return both weight and path
-    # ----------------------------
-    # print("xxx",x, Omega,I_x,Wp ,Vx)
-    return Vx, sp
+        if Vx > best_Vx:
+            best_Vx = Vx
+            best_sp = sp
 
+    return best_Vx, best_sp
 
 
 
