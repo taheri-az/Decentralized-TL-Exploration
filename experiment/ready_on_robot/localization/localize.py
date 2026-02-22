@@ -22,27 +22,36 @@ def convert_coord(x, rvec, tvec):
     return np.linalg.inv(origin_R) @ (camera_frame_coord - origin_tvec)
 
 
-def localize_fast(frame):
+dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+parameters = cv2.aruco.DetectorParameters()
+detector = cv2.aruco.ArucoDetector(dictionary, parameters)
+h, w = 1200, 1920
+newcameramtx, roi = cv2.getOptimalNewCameraMatrix(mtx, dist, (w, h), 1, (w, h))
+mapx, mapy = cv2.initUndistortRectifyMap(
+    mtx, dist, None, newcameramtx, (w, h), cv2.CV_32FC1
+)
 
-    dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
-    parameters = cv2.aruco.DetectorParameters()
-    detector = cv2.aruco.ArucoDetector(dictionary, parameters)
-    (corners, ids, rejected) = detector.detectMarkers(frame)
+def localize_fast(frame):
+    undistorted = cv2.remap(frame, mapx, mapy, cv2.INTER_LINEAR)
+    # undistorted = undistorted[y:y+h, x:x+w]
+    cv2.imwrite("frame.jpg", frame)
+    cv2.imwrite("und.jpg", undistorted)
+
+    (corners, ids, rejected) = detector.detectMarkers(undistorted)
     if len(corners) == 0:
-        print("Did not found corners")
-        exit()
+        # print("Did not found corners")
+        return None, None, None
+        # exit()
     ids = list(map(lambda x: int(x), ids.flatten()))
 
     locations = []
     headings = []
     for i in range(len(ids)):
-        # aruco_marker_size = 0.18 # in meters
-        # aruco_marker_size = 0.112  # in meters
-        # aruco_marker_size = 0.057
         aruco_marker_size = 0.12
         nada, rvec, tvec = cv2.solvePnP(
             landmarks * aruco_marker_size, corners[i], mtx, dist
         )
+        # print(rvec, tvec)
         # cv2.drawFrameAxes(frame, mtx, dist, rvec, tvec, 0.2)
 
         x0 = convert_coord(landmarks[0], rvec, tvec)
@@ -106,28 +115,41 @@ def localize(frame):
 
 if __name__ == "__main__":
     # Use 4 for capturing USB C camera (Better one) / Use 1 for webcam
-    vid = cv2.VideoCapture(0)
+    vid = cv2.VideoCapture(4)
+    # vid = cv2.VideoCapture(1, cv2.CAP_V4L2)
+    # vid = cv2.VideoCapture(
+    #     "v4l2src device=/dev/video1 ! video/x-raw,width=1920,height=1200 ! videoconvert ! appsink",
+    #     cv2.CAP_GSTREAMER
+    # )
+
+
 
     width = vid.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
     height = vid.set(cv2.CAP_PROP_FRAME_HEIGHT, 1200)
     fps = vid.get(cv2.CAP_PROP_FPS)
     # print(width, height, fps)
 
+
     while True:
         ret, frame = vid.read()
 
         # Display the resulting frame
-        print("Showing img")
+        # print("Showing img")
         cv2.imshow("frame", frame)
 
-        key = cv2.waitKey()
+        key = cv2.waitKey(1)
         if key == ord("q"):
-            cv2.destroyAllWindows()
             break
         if key == ord("c"):
             continue
         if key == ord("l"):
             # localize(frame)
+            cv2.imwrite(f"a.jpg", frame)
             print(localize_fast(frame))
 
+
     vid.release()
+    cv2.destroyAllWindows()
+
+
+# sudo modprobe -r uvcvideo && sleep 0.3 && sudo modprobe uvcvideo
