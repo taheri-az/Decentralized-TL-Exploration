@@ -8,7 +8,7 @@ def create_grid(n, m):
     return grid
 
 # Function to create the graph representation of the grid
-def create_graph(m, n):
+def create_graph(n, m):
     num_nodes = n * m
     nodes = np.arange(num_nodes).reshape(n, m)
     edges = []
@@ -510,7 +510,7 @@ def find_shortest_path_to_accepting(current_product_state, accepting_dfa_states,
 
 
 
-def detect_frontiers_e(m, n, visited, unknown):
+def detect_frontiers_e(n, m, visited, unknown):
     """
     Frontier cells are VISITED cells that are 4-connected
     to at least one UNKNOWN cell.
@@ -535,7 +535,7 @@ def detect_frontiers_e(m, n, visited, unknown):
                 if u in unknown:
                     frontiers.add(v)   # <-- ADD THE VISITED CELL
                     break              # no need to check other neighbors
-    print(frontiers)
+
     return frontiers
 
 import numpy as np

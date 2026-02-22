@@ -1,41 +1,118 @@
-import sys
-import numpy as np
-from pathlib import Path as P
-
-sys.path.append(str(P(__file__).absolute().parent.parent))
 import socket
 import threading
 import json
-# import cv2
 import time
-# from localization.localize import localize_fast
+import sys
+from pathlib import Path as P
+from experiment.server_helper import *
+import cv2
+from localization.localize import localize_fast
+
+import sys
+sys.path.append(str(P(__file__).absolute().parent.parent))
+
+# Load agent configurations and compute DFA data
+try:
+    with open('agents_config.json', 'r') as f:
+        agents_configs = json.load(f)
+    
+    initial_positions = {}
+    dfa_transitions_dict = {}
+    dfa_initial_states = {}
+    dfa_trash_states = {}
+    commit_states_dict = {}
+    
+    for config in agents_configs:
+        aid = config['id']
+        initial_positions[aid] = config['start']
+        formula_str = config['mission']
+        
+        # Compute DFA for this agent's mission
+        dfa_transitions_dict[aid], dfa_initial_states[aid], dfa_trash_states[aid] = \
+            extract_dfa_transitions_with_trash_expanded(formula_str)
+        
+        commit_states_dict[aid] = compute_commit_states(
+            formula_str, 
+            dot_file=f"agent_{aid}_product", 
+            fmt="pdf"
+        )
+        
+        print(f"Loaded Agent {aid}:")
+        print(f"   Mission: {formula_str}")
+        print(f"   Starting position: {initial_positions[aid]}")
+        
+except FileNotFoundError:
+    print("❌ Error: agents_config.json not found!")
+    sys.exit(1)
 
 
 RID_TO_ARUCOID = {0: 0, 1: 1, 2: 2}
 
-# vid = cv2.VideoCapture(0)
 
-# width = vid.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
-# height = vid.set(cv2.CAP_PROP_FRAME_HEIGHT, 1200)
-# # fps = vid.set(cv2.CAP_PROP_FPS, 10)
-# # fps = vid.get(cv2.CAP_PROP_FPS)
-
-
-# camera_lock = threading.Lock()
+class Camera:
+    def __init__(self, src):
+        self.cap = cv2.VideoCapture(src)
+        # vid = cv2.VideoCapture(4)
+        # vid = cv2.VideoCapture(1, cv2.CAP_V4L2)
 
 
-# def read():
-#     while True:
-#         with camera_lock:
-#             ret = vid.grab()
-#         # Note that sleep is much less than frame speed which is about 0.02. The reason is when CPU is doing sth else, frames are qued and we should empty them very fast without much sleep.
-#         # sleep(0.001)
-#         if not ret:
-#             break
+        width = self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+        height = self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1200)
+        # fps = vid.set(cv2.CAP_PROP_FPS, 10)
+        # fps = vid.get(cv2.CAP_PROP_FPS)
+        self.read_thread = threading.Thread(target=self._reader, daemon=True)
+        self.localize_thread = threading.Thread(target=self._localize, daemon=True)
+        self.frame_lock = threading.Lock()
+        self.read_lock = threading.Lock()
 
+        self.running = False
+        self.frame = None
 
-# reader_thread = threading.Thread(target=read, daemon=True)
-# reader_thread.start()
+        self.locations = {}
+        self.headings = {}
+    
+    def start(self):
+        self.running = True
+        self.read_thread.start()
+        self.localize_thread.start()
+
+    def _reader(self):
+        while self.running:
+            ret, frame = self.cap.read()
+            if not ret:
+                continue
+            with self.frame_lock:
+                self.frame = frame
+
+    def _localize(self):
+        while self.running:
+            time.sleep(0.01)
+            with self.frame_lock:
+                if self.frame is None:
+                    continue
+                frame = self.frame.copy()
+            ids, locations, headings = localize_fast(frame)
+            if not ids is None:
+                locations, headings = self.scale_and_flip(locations, headings)
+                for i, loc, heading in zip(ids, locations, headings):
+                    with self.read_lock: 
+                        self.locations[i] = [loc[0], loc[1]]
+                        self.headings[i] = heading
+
+    def scale_and_flip(self, locations, headings):
+        new_headings = (360 - np.array(headings)).tolist()
+        # new_locations = []
+        # for location in locations:
+        #     new_locations.append([location[0], -1 * location[1]])
+        # return new_locations, new_headings
+        return locations, new_headings
+
+    def stop(self):
+        self.running = False
+        self.read_thread.join()
+        self.cap.release()
+
+camera = Camera(4)
 
 
 class RobotHandler(threading.Thread):
@@ -43,51 +120,75 @@ class RobotHandler(threading.Thread):
         super(RobotHandler, self).__init__()
         self.socket = socket
         self.rid = rid
-        self.aruco_id = RID_TO_ARUCOID[rid]
+        self.aruco_id = RID_TO_ARUCOID.get(rid, rid)
         self.exit = False
+        
+        # Send RID confirmation
         self.send_msg({"rid": rid})
+        
+        # Send initialization data with DFA
+        self.send_init_data()
+        
         self.next_robots_called = 0
-
         self.is_ready = False
         self.is_complete = False
         self.snapshot = None
-
+    
+    def send_init_data(self):
+        """Send DFA and initial position to client"""
+        init_msg = {
+            'type': 'init',
+            'initial_position': initial_positions[self.rid],
+            'dfa_transitions': dfa_transitions_dict[self.rid],
+            'initial_state': dfa_initial_states[self.rid],
+            'trash_states_set': list(dfa_trash_states[self.rid]),
+            'commit_states': list(commit_states_dict[self.rid])
+        }
+        self.send_msg(init_msg)
+        # print("init", init_msg)
+        print(f"✅ Sent init data to Agent {self.rid}")
+    
     def run(self):
         while True:
             if self.exit:
-                exit()
+                return
 
             message = self.read_msg()
             if not message:
                 print("EXITING ROBOT HANDLER.")
-                exit()
-            message = json.loads(message)
+                return
+            
+            try:
+                message = json.loads(message)
+            except:
+                print(f"Failed to parse message from robot {self.rid}")
+                return
 
             message_type = message["type"]
-            print(f"A request from robot: {message['rid']}")
+            # print(f"A request from robot: {message['rid']}")
 
             response = {}
-            if message_type == "pose":
+            if message_type == "get_pose":
+                response["type"] = "pose"
                 print("Getting pose for robot: ", self.rid)
                 response["xy"], response["heading"] = self.get_location()
-                while response["xy"] is None:
-                    response["xy"], response["heading"] = self.get_location()
+                print(f"   Agent {self.rid}: Got location")
+                self.send_msg(response)
             elif message_type== 'snapshot':
                 self.snapshot = message['data']
-                print(f"Received snapshot from Agent {self.rid}")
+                print(f"Agnet {self.rid}: Received snapshot")
             
             elif message_type == 'ready':
                 self.is_ready = True
                 if not self.is_complete:
-                    print(f"   Agent {self.rid} ready")
+                    print(f"Agent {self.rid}: Received ready")
             
             elif message_type == 'complete':
                 was_active = not self.is_complete
                 self.is_complete = True
                 self.is_ready = True
                 if was_active:
-                    print(f"Agent {self.rid} mission complete!")
-
+                    print(f"Agent {self.rid}: mission complete!")
 
     def stop(self):
         self.exit = True
@@ -100,60 +201,59 @@ class RobotHandler(threading.Thread):
             if not packet:
                 break
             data += packet
+        
         return data
 
     def read_msg(self):
-        msg_length = int(self.recv_all(10))
-        # print("read_msg len: ", msg_length)
+        try:
+            msg_length_bytes = self.recv_all(10)
+            if not msg_length_bytes or len(msg_length_bytes) < 10:
+                return None
+            msg_length = int(msg_length_bytes)
+        except (ValueError, Exception) as e:
+            print(f"Error reading message length from robot {self.rid}: {e}")
+            return None
+        
         msg = self.recv_all(msg_length)
-        # print("read msg: ", msg)
+        if not msg:
+            return None
         return msg.decode()
 
     def send_msg(self, msg):
-        # print("Sending message to: ", self.rid)
         data = json.dumps(msg).encode()
         data_length = len(data)
-        # print("Sending message: ", str(data_length).encode().rjust(10, b"0"), data)
         self.socket.send(str(data_length).encode().rjust(10, b"0") + data)
 
     def get_neighbors(self, my_id, ids, locations):
         return []
 
-    def scale_and_flip(self, locations, headings):
-        new_headings = (360 - np.array(headings)).tolist()
-        new_locations = []
-        for location in locations:
-            new_locations.append([location[0], -1 * location[1]])
-        return new_locations, new_headings
+    def get_location(self):
+        # cv2.imwrite(f"a{self.rid}.jpg", frame)
+        while True:
+            with camera.read_lock: 
+                loc, heading = camera.locations[self.aruco_id], camera.headings[self.aruco_id]
+            if loc is None:
+                time.sleep(0.01)
+                continue
+            return loc, heading
 
-
-    # def get_location(self):
-    #     try:
-    #         ret, frame = vid.retrieve()
-    #         cv2.imwrite("a.jpg", frame)
-    #         ids, locations, headings = localize_fast(frame)
-    #         locations, headings = self.scale_and_flip(locations, headings)
-    #         my_location = locations[ids.index(self.aruco_id)]
-    #         return [my_location[0], my_location[1]], headings[ids.index(self.aruco_id)]
-    #     except:
-    #         return None, None
 
     def close(self):
         self.send_msg({"type": "shutdown"})
         self.socket.close()
 
-
     def get_snapshot(self):
+        print("Handler sending request for snapshot")
         self.snapshot = None
         self.send_msg({"type": "request_snapshot"})
     
-        
-    def step(self, iteration):
+    def step(self):
+        print("Handler sending request for step")
         message = {
             'type': 'step',
-            'iteration': iteration
         }
         self.send_msg(message)
+
 
 class Server:
     def __init__(self, num_agents=2, max_iterations=1000, grid_size=20, com_range=300):
@@ -167,7 +267,6 @@ class Server:
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.socket.bind((self.host, self.port))
 
-
         self.robot_handlers = []
 
     def run(self):
@@ -175,23 +274,24 @@ class Server:
 
         self.socket.listen(10)
         for i in range(self.num_agents):
-            # configure how many client the server can listen simultaneously
             try:
-                client_socket, address = self.socket.accept()  # accept new connection
+                client_socket, address = self.socket.accept()
             except:
                 print("Not accepting new clients anymore")
                 break
 
             print(f"Connection from: {str(address)}, starting a new thread")
-            # TODO: Check if I should somehow make this daemon
             robot_handler = RobotHandler(client_socket, len(self.robot_handlers))
             self.robot_handlers.append(robot_handler)
             robot_handler.start()
 
-        command = input("Give command -> ")
-        if command != "start":
-            exit()
-                
+        # command = input("Give command -> ")
+        # if command != "start":
+        #     exit()
+        
+        # Give agents time to process init messages
+        print("⏳ Waiting for agents to initialize...")
+        time.sleep(2)
 
         self.iteration = 0
         while self.iteration < self.max_iterations:
@@ -208,32 +308,50 @@ class Server:
             
             if status == False:
                 break
-            time.sleep(1)
+            time.sleep(0.01)
         
         self.shutdown()
 
     def shutdown(self):
         print("Closing sockets")
-        self.socket.close()  # close the connection
+        
+        # First, signal all handlers to stop
         for robot_handler in self.robot_handlers:
-            robot_handler.close()
             robot_handler.stop()
-            robot_handler.join()
+        
+        # Send shutdown messages
+        for robot_handler in self.robot_handlers:
+            try:
+                robot_handler.close()
+            except:
+                pass
+        
+        # Give threads time to exit gracefully
+        time.sleep(0.5)
+        
+        # Close main socket
+        self.socket.close()
+        
+        # Wait for threads to finish (with timeout)
+        for robot_handler in self.robot_handlers:
+            robot_handler.join(timeout=1.0)
     
     def get_snapshots(self):
+        print("1. Send req for snapshots")
         for handler in self.robot_handlers:
             handler.get_snapshot()
-        print("waiting for snapshots...")
+        print("2. Waiting for snapshots...")
         while True:
             if all(not handler.snapshot is None for handler in self.robot_handlers):
+                print("3. Got snapshots")
                 return True
             time.sleep(0.1)
-        
     
     def wait_for_ready(self):
         print("waiting for ready...")
         while True:
             if all(handler.is_complete or handler.is_ready for handler in self.robot_handlers):
+                print("ready received")
                 if all(handler.is_complete for handler in self.robot_handlers):
                     print("All agents complete!")
                     return False
@@ -241,6 +359,7 @@ class Server:
             time.sleep(0.1)
 
     def broadcast_snapshots(self):
+        print("broadcasting snapshots")
         snapshots = {}
         for rid in range(self.num_agents):
             snapshots[rid] = self.robot_handlers[rid].snapshot
@@ -273,9 +392,16 @@ class Server:
     
     def broadcast_step(self):
         for handler in self.robot_handlers:
+            handler.is_ready = False
             if not handler.is_complete:
-                handler.step(self.iteration)
+                handler.step()
+
 
 if __name__ == "__main__":
     server = Server()
+
+    camera.start()
+    time.sleep(0.1)
     server.run()
+
+    camera.stop()

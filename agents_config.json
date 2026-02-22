@@ -7,8 +7,8 @@
     },
     {
       "id": 1,
-      "start": 279,
-      "mission": "!d U (d U (a)) & !b U a",
+      "start": 216,
+      "mission": "!d U (d U (a))",
       "description": "Find 'a'"
     }
   ]

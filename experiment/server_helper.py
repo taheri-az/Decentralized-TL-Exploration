@@ -651,6 +651,79 @@ def task_progress_metric(
 
 
 
+
+# def compute_frontier_commit(
+#     x,
+#     product_graph,
+#     start_cell,
+#     start_dfa_state,
+#     accepting_states,
+#     commit_states,
+#     trash_state,
+#     delta_phi,
+#     I_x,
+#     X_size,
+#     dfa_distance,
+#     alpha1,
+#     alpha2,
+#     alpha3
+# ):
+#     """
+#     Compute frontier value V(x) and trajectory sp.
+
+#     Returns:
+#         Vx: float
+#         sp: list of product states (or None if unreachable/unsafe)
+#     """
+
+#     # ----------------------------
+#     # 1. Compute shortest product path to frontier
+#     # ----------------------------
+#     sp = shortest_product_path_to_frontier(
+#         product_graph,
+#         start_cell,
+#         start_dfa_state,
+#         x,
+#         accepting_states,
+#         commit_states,
+#         trash_state
+#     )
+
+#     # ----------------------------
+#     # 2. Compute task progress metric Ω(sp)
+#     # ----------------------------
+#     if sp is None:
+#         Omega = float('-inf')
+#     else:
+#         q0 = sp[0][1]          # initial DFA state
+#         qf = sp[-1][1]         # final DFA state
+
+#         if qf == trash_state:
+#             Omega = float('-inf')
+#         elif qf in commit_states:
+#             Omega = -alpha1 * X_size / alpha2
+#         else:
+#             Omega = delta_phi(q0, qf, dfa_distance)
+
+#     # ----------------------------
+#     # 3. Compute trajectory weight Wp(sp)
+#     # ----------------------------
+#     Wp = len(sp) - 1 if sp is not None else 1
+
+#     # ----------------------------
+#     # 4. Compute frontier value
+#     # ----------------------------
+#     if Omega == float('-inf'):
+#         Vx = float('-inf')
+#     else:
+#         Vx = (alpha1 * I_x + alpha2 * Omega) / (Wp ** alpha3)
+
+#     # ----------------------------
+#     # 5. Return both weight and path
+#     # ----------------------------
+#     # print("xxx",x, Omega,I_x,Wp ,Vx)
+#     return Vx, sp
+
 def compute_frontier_commit(x, product_graph, start_cell, start_dfa_state,
                              accepting_states, commit_states, trash_state,
                              delta_phi, I_x, X_size, dfa_distance,
@@ -699,6 +772,9 @@ def compute_frontier_commit(x, product_graph, start_cell, start_dfa_state,
             best_sp = sp
 
     return best_Vx, best_sp
+
+
+
 
 
 

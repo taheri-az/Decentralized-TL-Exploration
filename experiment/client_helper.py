@@ -703,7 +703,79 @@ def min_dist_to_frontier(m, n, agent_pos, agents_in_range, frontier_x):
 
 
 
-#fixed_an_issue_regarding_product_path
+
+
+
+# def compute_frontier_commit(
+#     x,
+#     product_graph,
+#     start_cell,
+#     start_dfa_state,
+#     accepting_states,
+#     commit_states,
+#     trash_state,
+#     delta_phi,
+#     I_x,
+#     X_size,
+#     dfa_distance,
+#     alpha1,
+#     alpha2,
+#     alpha3
+# ):
+#     """
+#     Compute frontier value V(x) and trajectory sp.
+
+#     Returns:
+#         Vx: float
+#         sp: list of product states (or None if unreachable/unsafe)
+#     """
+
+#     # ----------------------------
+#     # 1. Compute shortest product path to frontier
+#     # ----------------------------
+#     sp = shortest_product_path_to_frontier(
+#         product_graph,
+#         start_cell,
+#         start_dfa_state,
+#         x,
+#         accepting_states,
+#         commit_states,
+#         trash_state
+#     )
+
+#     # ----------------------------
+#     # 2. Compute task progress metric Omega(sp)
+#     # ----------------------------
+#     if sp is None:
+#         Omega = float('-inf')
+#     else:
+#         q0 = sp[0][1]          # initial DFA state
+#         qf = sp[-1][1]         # final DFA state
+
+#         if qf == trash_state:
+#             Omega = float('-inf')
+#         elif qf in commit_states:
+#             Omega = -alpha1 * X_size / alpha2
+#         else:
+#             Omega = delta_phi(q0, qf, dfa_distance)
+
+#     # ----------------------------
+#     # 3. Compute trajectory weight Wp(sp)
+#     # ----------------------------
+#     Wp = len(sp) - 1 if sp is not None else 1
+
+#     # ----------------------------
+#     # 4. Compute frontier value
+#     # ----------------------------
+#     if Omega == float('-inf'):
+#         Vx = float('-inf')
+#     else:
+#         Vx = (alpha1 * I_x + alpha2 * Omega) / (Wp ** alpha3)
+
+#     # ----------------------------
+#     # 5. Return both weight and path
+#     # ----------------------------
+#     return Vx, sp
 def compute_frontier_commit(
     x,
     product_graph,
@@ -774,6 +846,22 @@ def compute_frontier_commit(
             best_sp = sp
 
     return best_Vx, best_sp
+
+
+
+
+
+def delta_phi(q_start, q_final, dfa_distances):
+    if q_start not in dfa_distances or q_final not in dfa_distances:
+        return float('-inf')
+
+    d0 = dfa_distances[q_start]
+    df = dfa_distances[q_final]
+
+    if d0 == float('inf') or df == float('inf'):
+        return float('-inf')
+
+    return d0 - df
 
 
 

@@ -1,6 +1,9 @@
-from Helper import *
+# -*- coding: utf-8 -*-
+from client_helper import *
 import copy
 import random
+import numpy as np
+
 class Environment:
     """Shared environment for all agents"""
     def __init__(self, n, m, node_labels_t):
@@ -15,8 +18,23 @@ class Environment:
             if node not in self.node_labels_t:
                 self.node_labels_t[node] = set()
 
+    def get_node_coordinates(self, node_index):
+        """Convert node index to (x, y) coordinates for robot waypoints."""
+        row = node_index // self.m
+        col = node_index % self.m
+
+        # Adjust these values based on your Webots world setup
+        cell_size = 0.25  # meters per grid cell
+        offset_x = 0.5   # world origin offset
+        offset_y = 0.5  # Start from top (Y=10)
+
+        x = col * cell_size + offset_x
+        y = offset_y + (row * cell_size)  # SUBTRACT to make Y decrease as row increases
+        return (y, x)
+
+
 class Agent:
-    def __init__(self, agent_id, initial_position, formula_str, env, h, alpha1, alpha2, alpha3):
+    def __init__(self, agent_id, initial_position, dfa_transitions, initial_state, trash_states_set, commit_states, env, h, alpha1, alpha2, alpha3):
         """
         Initialize an agent with its own mission and DFA.
         
@@ -41,17 +59,15 @@ class Agent:
         self.alpha1 = alpha1
         self.alpha2 = alpha2
         self.alpha3 = alpha3
-        
-        # Mission-specific
-        self.formula_str = formula_str
-        
-        # Generate DFA for this agent's mission FIRST
-        self.dfa_transitions, self.initial_state, self.trash_states_set = \
-            extract_dfa_transitions_with_trash_expanded(formula_str)
+
+        self.dfa_transitions = dfa_transitions
+        self.initial_state = initial_state
+        self.trash_states_set = trash_states_set
+        self.commit_states = commit_states
         
         # Extract atomic props from DFA transitions AFTER dfa_transitions is created
         self.atomic_props = extract_atomic_props_from_dfa(self.dfa_transitions)
-        print(f"Agent {agent_id} atomic props: {self.atomic_props}")
+        print("Agent {} atomic props: {}".format(agent_id, self.atomic_props))
         
         # Now prune using atomic_props
         self.pruned_dfa_transitions = prune_dfa_transitions_single_ap_only(
@@ -63,15 +79,10 @@ class Agent:
         for s1, _, s2 in self.dfa_transitions:
             self.dfa_states.update([s1, s2])
         
-        self.accepting_states = {'accept_all'}
+        self.accepting_states = set(['accept_all'])
         self.trash_state = 'Trash'
         
-        # Compute commit states
-        self.commit_states = compute_commit_states(
-            formula_str, 
-            dot_file=f"agent_{agent_id}_product", 
-            fmt="pdf"
-        )
+        # Filter commit states
         self.commit_states = [s for s in self.commit_states if s not in self.trash_states_set]
         self.commit_states = [str(s) for s in self.commit_states]
         
@@ -171,24 +182,44 @@ class Agent:
                     self.atomic_props
                 )
     
+    # def check_mission_complete(self):
+    #     """Check if mission can be completed from current state."""
+    #     current_product_state = (self.current_physical_state, self.current_dfa_state)
+    #     accepting_path = find_shortest_path_to_accepting(
+    #         current_product_state, 
+    #         self.accepting_states, 
+    #         self.transitions
+    #     )
+        
+    #     if accepting_path:
+    #         print("[OK] Agent {}: Accepting path found! Executing...".format(self.id))
+    #         for state in accepting_path[1:]:
+    #             self.current_physical_state, self.current_dfa_state = state
+    #             self.full_traj.append(state)
+    #             self.full_physical_traj.append(int(self.current_physical_state))
+    #             print("Agent {} -> {}".format(self.id, state))
+    #         return True
+    #     return False
+    # added for fully following the path
     def check_mission_complete(self):
-        """Check if mission can be completed from current state."""
+        """
+        Check if mission can be completed from current state.
+        Returns physical path (list) if found, else None.
+        Does NOT modify agent state.
+        """
         current_product_state = (self.current_physical_state, self.current_dfa_state)
         accepting_path = find_shortest_path_to_accepting(
-            current_product_state, 
-            self.accepting_states, 
+            current_product_state,
+            self.accepting_states,
             self.transitions
         )
-        
+
         if accepting_path:
-            print(f"✅ Agent {self.id}: Accepting path found! Executing...")
-            for state in accepting_path[1:]:
-                self.current_physical_state, self.current_dfa_state = state
-                self.full_traj.append(state)
-                self.full_physical_traj.append(int(self.current_physical_state))
-                print(f"Agent {self.id} →", state)
-            return True
-        return False
+            physical_path = [int(s) for (s, q) in accepting_path]
+            print("[OK] Agent {}: Accepting path found: {}".format(self.id, physical_path))
+            return physical_path
+
+        return None
     
     def select_frontier(self, agents_in_range=None):
         """Select best frontier to explore."""
@@ -196,7 +227,7 @@ class Agent:
         frontiers = detect_frontiers_e(self.env.n, self.env.m, self.visited, unknown)
         
         if not frontiers:
-            print(f"❌ Agent {self.id}: No frontiers left.")
+            print("[ERROR] Agent {}: No frontiers left.".format(self.id))
             return None, None
         
         # Compute information gain for each frontier
@@ -204,13 +235,11 @@ class Agent:
         for x in frontiers:
             revealed = get_states_within_h_distance(self.env.m, self.env.n, x, self.h)
             base_info_gain = len(set(revealed) - self.visited)
-            # print("fr",x,base_info_gain)
             
             # If in communication range with other agents, apply distance penalty
             if agents_in_range and len(agents_in_range) > 0:
                 dist_self_to_frontier = dis_to_frontier(self.env.m, self.env.n, 
-                                                         self.current_physical_state, x)
-                
+                                                        self.current_physical_state, x)
                 if dist_self_to_frontier > 0:
                     min_dist = min_dist_to_frontier(
                         self.env.m, self.env.n, 
@@ -218,23 +247,17 @@ class Agent:
                         agents_in_range, 
                         x
                     )
-                    
-                    dis_penalty = min_dist / dist_self_to_frontier
-                    norm_dis_penalty = (dis_penalty)/(1 + dis_penalty)
-                    # k=2
-                    # norm_dis_penalty = 1 / (1 + np.exp(-k * (dis_penalty - 1)))
-                    # print("pp",min_dist,dist_self_to_frontier,dis_penalty,norm_dis_penalty)
+                    dis_penalty = min_dist / float(dist_self_to_frontier)
+                    norm_dis_penalty = dis_penalty / (1 + dis_penalty)
                     I_x_dict[x] = base_info_gain * norm_dis_penalty 
                 else:
                     I_x_dict[x] = base_info_gain
             else:
                 I_x_dict[x] = base_info_gain
-
-            # print("fr2",x,I_x_dict[x])
+        
         # Score frontiers
         weights = {}
         best_paths = {}
-        
         for x in frontiers:
             w, sp = compute_frontier_commit(
                 x=x,
@@ -254,21 +277,17 @@ class Agent:
             )
             weights[x] = w
             best_paths[x] = sp
-            # print("frotnie",x,weights[x],best_paths[x])
         
         valid_frontiers = [x for x in frontiers if best_paths[x] is not None]
-        
         if not valid_frontiers:
-            print(f"Agent {self.id}: No reachable frontiers left.")
+            print("Agent {}: No reachable frontiers left.".format(self.id))
             return None, None
         
         max_weight = max(weights[x] for x in valid_frontiers)
         best_frontiers = [x for x in valid_frontiers if weights[x] == max_weight]
-        print("vets_l",best_frontiers)
-
+        print("vets_l {}".format(best_frontiers))
         best_frontier = random.choice(best_frontiers)
-        print("vets",best_frontier)
-
+        print("vets {}".format(best_frontier))
         path = [s for (s, q) in best_paths[best_frontier]]
         
         return best_frontier, path
@@ -284,10 +303,8 @@ class Agent:
             )
             self.current_physical_state = step
             self.update_knowledge()
-            
             self.full_traj.append((step, self.current_dfa_state))
             self.full_physical_traj.append(step)
-    
     
     def prepare_communication_updates_decentralized(self, other_agents_snapshots):
         """
@@ -309,8 +326,8 @@ class Agent:
         """
         new_nodes_total = set()
         new_labels_total = {}
-        learned_from = {}  # Track what we learned from each agent
-        nodes_by_source = {}  # Track which nodes came from which agent
+        learned_from = {}
+        nodes_by_source = {}
         
         # My current knowledge at the start of this timestep
         my_visited = self.visited
@@ -340,6 +357,7 @@ class Agent:
             'new_labels': new_labels_total,
             'learned_from': learned_from
         }
+    
     def apply_communication_updates_decentralized(self, updates):
         """
         PHASE 2: Apply the prepared updates to this agent.
@@ -379,11 +397,10 @@ class Agent:
                 self.atomic_props
             )
     
-    # NO PRINT HERE - let the main loop handle it          
-    
     def step(self, agents_in_range=None):
         """Execute one step of the agent's exploration."""
-        print(f"\n🤖 Agent {self.id} - Current state: ({self.current_physical_state}, {self.current_dfa_state})")
+        print("\n[AGENT] Agent {} - Current state: ({}, {})".format(
+            self.id, self.current_physical_state, self.current_dfa_state))
         
         self.update_product_automaton()
         
@@ -393,15 +410,14 @@ class Agent:
         best_frontier, path = self.select_frontier(agents_in_range)
         
         if best_frontier is None or path is None:
-            print(f"Agent {self.id}: Cannot proceed further.")
+            print("Agent {}: Cannot proceed further.".format(self.id))
             return True
         
-        print(f"🚀 Agent {self.id} moving to frontier {best_frontier}")
+        print("[START] Agent {} moving to frontier {}".format(self.id, best_frontier))
         self.move_along_path(path)
         
         return False
     
-
     def move_one_step(self, next_position):
         """
         Move agent one step to the next position.
