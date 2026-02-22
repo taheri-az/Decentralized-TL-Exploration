@@ -9,7 +9,7 @@ import time
 import numpy as np
 from pathlib import Path as P
 from client_helper import *
-from classes_2 import Environment, Agent
+from experiment.classes import Environment, Agent
 np.random.seed(0)
 
 REAL_WORLD = False
