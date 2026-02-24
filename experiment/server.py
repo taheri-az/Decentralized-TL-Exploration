@@ -4,7 +4,7 @@ import json
 import time
 import sys
 from pathlib import Path as P
-from experiment.server_helper import *
+from server_helper import *
 import cv2
 from localization.localize import localize_fast
 

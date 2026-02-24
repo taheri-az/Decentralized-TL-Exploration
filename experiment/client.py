@@ -9,7 +9,7 @@ import time
 import numpy as np
 from pathlib import Path as P
 from client_helper import *
-from experiment.classes import Environment, Agent
+from classes import Environment, Agent
 np.random.seed(0)
 
 REAL_WORLD = False
@@ -30,7 +30,7 @@ def my_print(*args):
         print(args[0], args[1], args[2], args[3], args[4])
         sys.stdout = open(os.devnull, "w")
     else:
-        print(*args)
+        print(args)
 
 
 class Moorebot:
@@ -336,8 +336,8 @@ class Moorebot:
 
 
 if __name__ == "__main__":
-    # SERVER_IP = "localhost"
-    SERVER_IP = "192.168.1.58"  #5 
+    SERVER_IP = "localhost"
+    # SERVER_IP = "192.168.1.58"  #5 
     SERVER_PORT = 5000
     
     if len(sys.argv) > 1:
