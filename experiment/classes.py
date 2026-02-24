@@ -95,6 +95,7 @@ class Agent:
         
         # State tracking
         self.current_physical_state = initial_position
+        self.previous_physical_state = initial_position  # same at start
         self.current_dfa_state = self.initial_state
         
         self.visited = set()
@@ -120,8 +121,8 @@ class Agent:
     
     def _initialize_knowledge(self):
         """Initialize agent's knowledge with h-neighborhood of starting position."""
-        h_neighbors = get_states_within_h_distance(self.env.m, self.env.n, 
-                                                     self.current_physical_state, self.h)
+        h_neighbors = get_states_within_h_distance(self.env.m, self.env.n, self.previous_physical_state, 
+                                                     self.current_physical_state, max_depth=self.h)
         
         # Update labels and visited for initial neighborhood
         for node in h_neighbors:
@@ -154,8 +155,8 @@ class Agent:
     
     def update_knowledge(self):
         """Update agent's knowledge based on current position."""
-        h_neighbors = get_states_within_h_distance(self.env.m, self.env.n, 
-                                                     self.current_physical_state, self.h)
+        h_neighbors = get_states_within_h_distance(self.env.m, self.env.n, self.previous_physical_state,
+                                                     self.current_physical_state, max_depth=self.h)
         
         for node in h_neighbors:
             self.node_labels[node] = self.env.node_labels_t.get(node, set())
@@ -233,7 +234,7 @@ class Agent:
         # Compute information gain for each frontier
         I_x_dict = {}
         for x in frontiers:
-            revealed = get_states_within_h_distance(self.env.m, self.env.n, x, self.h)
+            revealed = get_states_within_h_distance(self.env.m, self.env.n, x, x, max_depth=self.h)
             base_info_gain = len(set(revealed) - self.visited)
             
             # If in communication range with other agents, apply distance penalty
@@ -301,6 +302,7 @@ class Agent:
             self.current_dfa_state = get_next_dfa_state(
                 self.current_dfa_state, label, self.dfa_transitions, self.atomic_props
             )
+            self.previous_physical_state = self.current_physical_state
             self.current_physical_state = step
             self.update_knowledge()
             self.full_traj.append((step, self.current_dfa_state))
@@ -437,6 +439,7 @@ class Agent:
         )
         
         # Move to next position
+        self.previous_physical_state = self.current_physical_state
         self.current_physical_state = next_position
         
         # Update knowledge at new position

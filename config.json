@@ -2,7 +2,7 @@
     "grid": {
       "n": 18,
       "m": 13,
-      "h": 3,
+      "h": 2,
       "com_range": 5
     },
     "weights": {

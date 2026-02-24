@@ -40,40 +40,103 @@ def create_graph(m, n):
 
 
 
-def get_states_within_h_distance(m, n, current_state, h):
-    # Function to convert state number to row and column
+# def get_states_within_h_distance(m, n, current_state, h):
+#     # Function to convert state number to row and column
+#     def state_to_row_col(state):
+#         return divmod(state, n)
+
+#     # Function to convert row and column to state number
+#     def row_col_to_state(row, col):
+#         if 0 <= row < m and 0 <= col < n:
+#             return row * n + col
+#         return None
+
+#     # Function to get all adjacent states of a given state
+#     def get_adjacent_states(state):
+#         row, col = state_to_row_col(state)
+#         adjacent_states = []
+#         for r, c in [(row-1, col), (row+1, col), (row, col-1), (row, col+1)]:
+#             adjacent_state = row_col_to_state(r, c)
+#             if adjacent_state is not None:
+#                 adjacent_states.append(adjacent_state)
+#         return adjacent_states
+
+#     # BFS to find all states within h distance
+#     visited = set()
+#     queue = [(current_state, 0)]  # Each element is a tuple (state, distance)
+#     while queue:
+#         state, distance = queue.pop(0)
+#         if distance > h:
+#             break
+#         visited.add(state)
+#         for next_state in get_adjacent_states(state):
+#             if next_state not in visited:
+#                 queue.append((next_state, distance + 1))
+
+#     return list(visited)
+
+#updated cone
+def get_states_within_h_distance(m, n, previous_state, current_state, max_depth):
+    """
+    Returns all states within a forward-expanding cone, where heading is
+    inferred from previous_state -> current_state.
+
+    If previous_state == current_state (agent hasn't moved), returns the
+    union of all 4 directional cones (full 360° vision).
+
+    Cone shape (e.g. facing North, max_depth=3):
+        Row +3:  X X X X X X X   (7 wide, spread ±3)
+        Row +2:    X X X X X     (5 wide, spread ±2)
+        Row +1:      X X X       (3 wide, spread ±1)
+        Row  0:        @         (current state)
+    """
+
     def state_to_row_col(state):
         return divmod(state, n)
 
-    # Function to convert row and column to state number
     def row_col_to_state(row, col):
         if 0 <= row < m and 0 <= col < n:
             return row * n + col
         return None
 
-    # Function to get all adjacent states of a given state
-    def get_adjacent_states(state):
-        row, col = state_to_row_col(state)
-        adjacent_states = []
-        for r, c in [(row-1, col), (row+1, col), (row, col-1), (row, col+1)]:
-            adjacent_state = row_col_to_state(r, c)
-            if adjacent_state is not None:
-                adjacent_states.append(adjacent_state)
-        return adjacent_states
+    # forward and side unit vectors for each heading
+    direction_map = {
+        (-1,  0): ((-1,  0), ( 0,  1)),  # moving North
+        ( 1,  0): (( 1,  0), ( 0,  1)),  # moving South
+        ( 0,  1): (( 0,  1), ( 1,  0)),  # moving East
+        ( 0, -1): (( 0, -1), ( 1,  0)),  # moving West
+    }
 
-    # BFS to find all states within h distance
-    visited = set()
-    queue = [(current_state, 0)]  # Each element is a tuple (state, distance)
-    while queue:
-        state, distance = queue.pop(0)
-        if distance > h:
-            break
-        visited.add(state)
-        for next_state in get_adjacent_states(state):
-            if next_state not in visited:
-                queue.append((next_state, distance + 1))
+    def build_cone(start_row, start_col, forward, side):
+        cells = []
+        for depth in range(1, max_depth + 1):
+            center_r = start_row + forward[0] * depth
+            center_c = start_col + forward[1] * depth
+            for offset in range(-depth, depth + 1):
+                r = center_r + side[0] * offset
+                c = center_c + side[1] * offset
+                state = row_col_to_state(r, c)
+                if state is not None:
+                    cells.append(state)
+        return cells
 
-    return list(visited)
+    cr, cc = state_to_row_col(current_state)
+    pr, pc = state_to_row_col(previous_state)
+    dr, dc = cr - pr, cc - pc
+
+    result = set([current_state])
+
+    if (dr, dc) == (0, 0):
+        # agent hasn't moved — union all 4 directional cones
+        for forward, side in direction_map.values():
+            result.update(build_cone(cr, cc, forward, side))
+    elif (dr, dc) in direction_map:
+        forward, side = direction_map[(dr, dc)]
+        result.update(build_cone(cr, cc, forward, side))
+    else:
+        raise ValueError(f"Cannot infer heading: states are not adjacent (delta=({dr},{dc}))")
+
+    return list(result)
 
 # Function to extract observations from DFA content
 def extract_observations(dfa_content):
