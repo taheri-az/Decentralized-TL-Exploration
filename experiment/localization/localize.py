@@ -132,3 +132,4 @@ if __name__ == "__main__":
 
     vid.release()
     cv2.destroyAllWindows()
+# sudo modprobe -r uvcvideo && sleep 0.3 && sudo modprobe uvcvideo
