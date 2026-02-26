@@ -241,7 +241,6 @@ class Moorebot:
         return result
 
     def move_to(self, dst):
-        # TODO: Maybe read from message in between, to make sure you are not exitted
         while True:
             message = {"type": "get_pose"}
             t = time.time()
@@ -272,6 +271,15 @@ class Moorebot:
                 direction += 360
             direction = 360 - direction
             # my_print("Moving to ", dst)
+
+            if abs(direction) > 5:  # dead zone to avoid tiny corrections
+                if direction > 0:
+                    direction = 1  # left
+                else:
+                    direction = 2  # right
+                rollereye.set_rotate_3(direction, abs(direction))
+                time.sleep(0.1)
+                continue
 
             Kp = 5
             control_speed = min(Kp * distance, 1, 0.15)
