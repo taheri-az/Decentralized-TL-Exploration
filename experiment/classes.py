@@ -20,17 +20,17 @@ class Environment:
 
     def get_node_coordinates(self, node_index):
         """Convert node index to (x, y) coordinates for robot waypoints."""
-        row = node_index // self.m
-        col = node_index % self.m
+        row = node_index // self.n
+        col = node_index % self.n
 
         # Adjust these values based on your Webots world setup
-        cell_size = 0.25  # meters per grid cell
-        offset_x = 0.5   # world origin offset
-        offset_y = 0.5  # Start from top (Y=10)
+        cell_size = 0.20  # meters per grid cell
+        offset_x = 0.05   # world origin offset
+        offset_y = 0.05  # Start from top (Y=10)
 
         x = col * cell_size + offset_x
-        y = offset_y + (row * cell_size)  # SUBTRACT to make Y decrease as row increases
-        return (y, x)
+        y = row * cell_size + offset_y
+        return (x, -y)
 
 
 class Agent:
@@ -153,13 +153,16 @@ class Agent:
                 new_edges.append((u, v))
         return new_edges
     
-    def update_knowledge(self):
+    def get_knowledge(self):
+        return  self.env.node_labels_t
+    
+    def update_knowledge(self, sensor_reading):
         """Update agent's knowledge based on current position."""
         h_neighbors = get_states_within_h_distance(self.env.m, self.env.n, self.previous_physical_state,
                                                      self.current_physical_state, max_depth=self.h)
         
         for node in h_neighbors:
-            self.node_labels[node] = self.env.node_labels_t.get(node, set())
+            self.node_labels[node] = sensor_reading.get(node, set())
             self.visited.add(node)
     
     def update_product_automaton(self):
@@ -444,7 +447,6 @@ class Agent:
         
         # Update knowledge at new position
         self.visited_old = copy.deepcopy(self.visited)
-        self.update_knowledge()
         
         # Record in trajectory
         self.full_traj.append((next_position, self.current_dfa_state))

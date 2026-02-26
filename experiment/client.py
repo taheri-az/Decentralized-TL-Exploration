@@ -1,24 +1,28 @@
 # client.py - Python 2 version
-import sys
 import os
+import cv2
+import sys
 import math
 import json
-import socket
-import errno
 import time
+import socket
+import threading
 import numpy as np
-from pathlib import Path as P
+from math import atan2, pi
 from client_helper import *
+from pathlib import Path as P
 from classes import Environment, Agent
 np.random.seed(0)
 
 REAL_WORLD = False
 ACCEPTANCE_DISTANCE = 0.10
+MARKER_SIZE = 0.04
 if REAL_WORLD:
+    import rospy
+    from sensor_msgs.msg import Image
     sys.path.append("/usr/local/lib")
     sys.path.append(str(P(__file__).absolute().parent.parent))
     from rollereye import *
-
 
 
 def my_print(*args):
@@ -93,6 +97,44 @@ class Moorebot:
         )
         self.agent.mission_finishing = False
 
+        if REAL_WORLD:
+            self._frame = None
+            self._event = threading.Event()
+            rospy.Subscriber("/CoreNode/grey_img", Image, self._cb, queue_size=1)
+            self.aruco_to_label = {
+                10: "d",
+                11: "p",
+                12: "s",
+                13: "e",
+                14: "f",
+                15: "g",
+                16: "a",
+                17: "obs",
+            }
+            with open(str(P(__file__).absolute().parent / "robot_camera.json"), "r") as f:
+                camera_data = json.load(f)
+            self.mtx = np.array(camera_data["mtx"])
+            self.dist = np.array(camera_data["dist"])
+
+            self.landmarks = np.array([
+                [-1,  1, 0],
+                [ 1,  1, 0],
+                [ 1, -1, 0],
+                [-1, -1, 0],
+            ], dtype=np.float32) * MARKER_SIZE / 2
+            self.aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50)
+            self.aruco_params = cv2.aruco.DetectorParameters_create()
+
+    def _cb(self, msg):
+        self._frame = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width)
+        self._event.set()
+
+    def get_frame(self, timeout=5.0):
+        self._event.clear()
+        if not self._event.wait(timeout):
+            raise RuntimeError("Timed out waiting for frame")
+        return self._frame
+
     def recv_all(self, total_bytes):
         data = b""
         while len(data) < total_bytes:
@@ -125,6 +167,78 @@ class Moorebot:
             raise Exception("Exit received")
         return server_message
     
+    def get_knowledge(self):
+        frame = self.get_frame()
+        ids, positions, _= self.detect_markers(frame)
+        labels = self.discretize_labels(ids, positions)
+        labels = self.relative_to_grid(labels)
+        return labels
+
+    def detect_markers(self, frame):
+        corners, ids, _ = cv2.aruco.detectMarkers(frame, self.aruco_dict, parameters=self.aruco_params)
+        if len(corners) == 0:
+            return [], [], []
+        ids_raw = [int(x) for x in ids.flatten()]
+        valid_ids = []
+        positions = []
+        headings = []
+        for i in range(len(ids_raw)):
+            ret, rvec, tvec = cv2.solvePnP(
+                self.landmarks, corners[i], self.mtx, self.dist,
+                flags=cv2.SOLVEPNP_ITERATIVE
+            )
+            if not ret:
+                continue
+            t = tvec.flatten()
+            positions.append([t[2], t[0]])
+            R = cv2.Rodrigues(rvec)[0]
+            marker_y = R[:, 1]
+            theta = atan2(marker_y[1], marker_y[0]) * 180 / pi
+            if theta < 0:
+                theta += 360
+            headings.append(theta)
+            valid_ids.append(ids_raw[i])
+        return valid_ids, positions, headings
+
+    def discretize_labels(self, ids, positions):
+        labels = {}
+        for i in range(len(ids)):
+            marker_id = ids[i]
+            if marker_id not in self.aruco_to_label:
+                continue
+
+            pos = positions[i]
+            pos = int(round(pos[0] / 0.2)), int(round(pos[1] / 0.2))
+            labels[pos] = self.aruco_to_label[marker_id]
+        return labels
+        
+        
+    def relative_to_grid(self, observations):
+        """
+        keys are (x,y), in which x is forward and y is right
+        """
+        current_idx = self.agent.current_physical_state
+        prev_idx = self.agent.previous_physical_state
+        n = self.env.n
+        # obs = {(1, 0): "chair", (1, 1): "table", (2, -1): "door"}
+        # result = relative_to_grid(27, 9, obs, n=18)
+        cur_row, cur_col = current_idx // n, current_idx % n
+        prev_row, prev_col = prev_idx // n, prev_idx % n
+
+        dr = cur_row - prev_row
+        dc = cur_col - prev_col
+        if dr == 0 and dc == 0:
+            dr = 0
+            dc = 1
+
+        result = {}
+        for (x_fwd, y_right), label in observations.items():
+            row = cur_row + x_fwd * dr + y_right * dc
+            col = cur_col + x_fwd * dc + y_right * (-dr)
+            # result[(row, col)] = label
+            result[row*n+col] = label
+
+        return result
 
     def move_to(self, dst):
         # TODO: Maybe read from message in between, to make sure you are not exitted
@@ -249,11 +363,19 @@ class Moorebot:
                     self.agent.current_frontier = best_frontier
             
             my_print("Before move")
+            my_print(self.agent.current_plan[0], self.agent.current_physical_state)
             next_position = self.agent.current_plan[1]
             self.agent.move_one_step(next_position)
+            if self.real_world:
+                sensor_reading = self.get_knowledge()
+                print(sensor_reading)
+            else:
+                sensor_reading = self.agent.get_knowledge()
+            self.agent.update_knowledge(sensor_reading)
             coord = self.env.get_node_coordinates(next_position)
             my_print("Converted {} to {}".format(next_position, coord))
             if self.real_world:
+                coord = self.env.get_node_coordinates(next_position)
                 self.move_to(coord)
             self.agent.current_plan = self.agent.current_plan[1:]
             
