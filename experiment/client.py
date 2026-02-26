@@ -14,9 +14,9 @@ from pathlib import Path as P
 from classes import Environment, Agent
 np.random.seed(0)
 
-REAL_WORLD = False
+REAL_WORLD = True
 ACCEPTANCE_DISTANCE = 0.10
-MARKER_SIZE = 0.04
+MARKER_SIZE = 0.038
 if REAL_WORLD:
     import rospy
     from sensor_msgs.msg import Image
@@ -41,25 +41,25 @@ class Moorebot:
     def __init__(self, socket, REAL_WORLD):
         self.socket = socket
         self.real_world = REAL_WORLD
-        
+
         # Read RID confirmation
         self.rid = self.read_msg(blocking=True)["rid"]
-        
+
         # Read init message with DFA data
         init_msg = self.read_msg(blocking=True)
-        
+
         if init_msg['type'] != 'init':
             print("[ERROR] Expected init message from server")
             sys.exit(1)
-        
+
         self.is_complete = False
-        
+
         try:
             config = load_config('config.json')
         except IOError:
             print("[ERROR] config.json not found!")
             sys.exit(1)
-        
+
         n = config['n']
         m = config['m']
         h = config['h']
@@ -68,19 +68,19 @@ class Moorebot:
         alpha2 = config['alpha2']
         alpha3 = config['alpha3']
         node_labels_t = config['node_labels_t']
-        
+
         self.env = Environment(n, m, node_labels_t)
-        
+
         # Extract DFA data from init message
         initial_position = init_msg['initial_position']
         dfa_transitions = init_msg['dfa_transitions']
         initial_state = init_msg['initial_state']
         trash_states = set(init_msg['trash_states_set'])
         commit_states = set(init_msg['commit_states'])
-        
+
         print("   Starting position: {}".format(initial_position))
         print("   DFA initial state: {}".format(initial_state))
-        
+
         # Create agent with DFA data instead of formula
         self.agent = Agent(
             agent_id=self.rid,
@@ -125,6 +125,7 @@ class Moorebot:
             self.aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50)
             self.aruco_params = cv2.aruco.DetectorParameters_create()
 
+
     def _cb(self, msg):
         self._frame = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width)
         self._event.set()
@@ -144,7 +145,6 @@ class Moorebot:
                 break
             data += packet
         return data
-
     def send_msg(self, msg):
         msg["rid"] = self.rid
         data = json.dumps(msg).encode()
@@ -166,7 +166,7 @@ class Moorebot:
         if server_message.get("type") == "exit":
             raise Exception("Exit received")
         return server_message
-    
+
     def get_knowledge(self):
         frame = self.get_frame()
         ids, positions, _= self.detect_markers(frame)
@@ -211,8 +211,8 @@ class Moorebot:
             pos = int(round(pos[0] / 0.2)), int(round(pos[1] / 0.2))
             labels[pos] = self.aruco_to_label[marker_id]
         return labels
-        
-        
+
+
     def relative_to_grid(self, observations):
         """
         keys are (x,y), in which x is forward and y is right
@@ -239,8 +239,8 @@ class Moorebot:
             result[row*n+col] = label
 
         return result
-
     def move_to(self, dst):
+        rotate = True
         while True:
             message = {"type": "get_pose"}
             t = time.time()
@@ -255,7 +255,7 @@ class Moorebot:
             heading = response["heading"]
 
             distance = math.sqrt((dst[1] - xy[1]) ** 2 + (dst[0] - xy[0]) ** 2)
-            # my_print("distance is: ", distance)
+            my_print("distance is: ", distance)
             if distance < ACCEPTANCE_DISTANCE:
                 my_print("Dist less than threshold, STOP.")
                 rollereye.stop_move() #8
@@ -264,22 +264,27 @@ class Moorebot:
             direction = (
                 math.atan2(dst[1] - xy[1], dst[0] - xy[0]) / math.pi * 180
             )  # -180 < dir < 180
-            if direction < 0:
-                direction += 360
-            direction -= heading
+            # my_print("dir ", direction)
             if direction < 0:
                 direction += 360
             direction = 360 - direction
+            direction -= heading
+            if direction < 0:
+                direction += 360
             # my_print("Moving to ", dst)
+            # my_print("dir - heading", direction)
 
-            if abs(direction) > 5:  # dead zone to avoid tiny corrections
-                if direction > 0:
-                    direction = 1  # left
+            if rotate and direction > 5 and direction < 355:  # dead zone to avoid tiny corrections
+                if direction > 180:
+                    dr = 1  # left
                 else:
-                    direction = 2  # right
-                rollereye.set_rotate_3(direction, abs(direction))
-                time.sleep(0.1)
+                    dr = 2  # right
+                # my_print("-----------", dr, direction)
+                rollereye.set_rotationSpeed(100)
+                #rollereye.set_rotate_3(dr, abs(direction))
+                rollereye.set_rotate(dr)
                 continue
+            rotate = False
 
             Kp = 5
             control_speed = min(Kp * distance, 1, 0.15)
@@ -306,7 +311,7 @@ class Moorebot:
             if msg['type'] == 'request_snapshot':
                 # Send snapshot to server
                 self.send_snapshot()
-                
+
             elif msg['type'] == 'shutdown':
                 break
             else:
@@ -314,32 +319,32 @@ class Moorebot:
 
             if self.is_complete:
                 my_print("Agent {} already completed mission, ignoring further commands.".format(self.rid))
-                        
+
                 continue
 
             other_snapshots = self.receive_snapshots()
-            
+
             if other_snapshots:
                 my_print("Agent {} received snapshots from: {}".format(self.rid, list(other_snapshots.keys())))
-                
+
                 updates = self.agent.prepare_communication_updates_decentralized(other_snapshots)
                 self.agent.apply_communication_updates_decentralized(updates)
-                
+
                 learned_from = updates.get('learned_from', {})
                 new_nodes = updates['new_visited']
                 if len(new_nodes) > 0:
-                    breakdown = ', '.join(["{} from Agent {}".format(count, aid) 
+                    breakdown = ', '.join(["{} from Agent {}".format(count, aid)
                                           for aid, count in learned_from.items() if count > 0])
                     my_print("Learned {} new nodes ({})".format(len(new_nodes), breakdown))
 
             step_msg = self.read_msg(blocking=True)
-            
+
             if step_msg['type'] != 'step':
                 raise Exception("Was waiting for step command but got: {}".format(step_msg['type']))
-            
-            
+
+
             self.agent.update_product_automaton()
-            
+
             accepting_path = self.agent.check_mission_complete()
             if accepting_path is not None and len(accepting_path) > 1:
                 my_print("Agent {}: Executing final accepting path: {}".format(
@@ -351,15 +356,15 @@ class Moorebot:
                 my_print("Agent {} mission complete (already at goal)!".format(self.rid))
                 self.send_complete()
                 continue
-            
+
             if not hasattr(self.agent, 'current_plan') or self.agent.current_plan is None or len(self.agent.current_plan) == 0:
                 # Build agents_in_range from snapshots for frontier selection
                 agents_in_range_positions = {
-                    int(aid): snapshot['position'] 
+                    int(aid): snapshot['position']
                     for aid, snapshot in other_snapshots.items()
                 }
                 best_frontier, path = self.agent.select_frontier(agents_in_range=agents_in_range_positions)
-                
+
                 if best_frontier is None or path is None:
                     my_print("Agent {}: Cannot proceed further.".format(self.rid))
                     self.send_complete()
@@ -369,12 +374,12 @@ class Moorebot:
                         self.rid, best_frontier, len(path)))
                     self.agent.current_plan = path
                     self.agent.current_frontier = best_frontier
-            
+
             my_print("Before move")
             my_print(self.agent.current_plan[0], self.agent.current_physical_state)
             next_position = self.agent.current_plan[1]
             self.agent.move_one_step(next_position)
-            if self.real_world:
+            if self.real_world and False:
                 sensor_reading = self.get_knowledge()
                 print(sensor_reading)
             else:
@@ -386,10 +391,10 @@ class Moorebot:
                 coord = self.env.get_node_coordinates(next_position)
                 self.move_to(coord)
             self.agent.current_plan = self.agent.current_plan[1:]
-            
+
             my_print("  Agent {} moved to {} ({} steps remaining)".format(
                 self.rid, self.agent.current_physical_state, len(self.agent.current_plan)-1))
-            
+
             # if len(self.agent.current_plan) == 1:
             #     my_print("    Agent {} reached frontier {}".format(self.rid, self.agent.current_frontier), 
             #             None, None, None, None)
@@ -406,7 +411,7 @@ class Moorebot:
                     continue
 
             self.send_ready()
-        
+
         my_print("="*60)
         my_print("Agent {} - FINAL RESULTS".format(self.rid))
         my_print("="*60)
@@ -426,7 +431,7 @@ class Moorebot:
             'visited': list(self.agent.visited),
             'node_labels': {k: list(v) for k, v in self.agent.node_labels.items()}
         }
-        
+
         message = {
             'type': 'snapshot',
             'data': snapshot
@@ -450,31 +455,31 @@ class Moorebot:
 
     def receive_snapshots(self):
         msg = self.read_msg()
-        
+
         if msg['type'] == 'snapshots':
             agents_in_range = msg['agents_in_range']
-            
+
             for other_id, snapshot in agents_in_range.items():
                 snapshot['visited'] = set(snapshot['visited'])
                 snapshot['node_labels'] = {
                     int(k): set(v) for k, v in snapshot['node_labels'].items()
                 }
-            
+
             return agents_in_range
-        else: 
+        else:
             raise Exception("Expected 'snapshots' message but got {}".format(msg['type']))
 
 
 if __name__ == "__main__":
     SERVER_IP = "localhost"
-    # SERVER_IP = "192.168.1.58"  #5 
+    # SERVER_IP = "192.168.1.58"  #5
     SERVER_PORT = 5000
-    
+
     if len(sys.argv) > 1:
-        SERVER_IP = sys.argv[1] 
+        SERVER_IP = sys.argv[1]
     if len(sys.argv) > 2:
         SERVER_PORT = int(sys.argv[2])
-    
+
     client_socket = socket.socket()
     client_socket.connect((SERVER_IP, SERVER_PORT))
 
